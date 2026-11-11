@@ -166,12 +166,11 @@ Virtual aliasing for use-after-free is known from research (Oscar, 2017). That r
 
 ---
  
-## 9. Baseline plan
+## 9. Getting Familiar
 
 1. Set up LLVM Scudo with GWP-ASan. Done.
 2. Run it on the toy target. Done.
-3. On the Lua repo, compare runs with GWP-ASan off and on, to isolate GWP-ASan's cost from Scudo's own. Write the comparison in a table.
-4. Just raising the sample rate in normal GWP-ASan may catch most of the bugs with far less complexity and risk. Worth measuring first.
+3. On the Lua repo, compare runs with GWP-ASan off and on, to isolate GWP-ASan's cost from Scudo's own. Done. `reports/lua.md`.
 
 Behavior checks (does it catch the bug?) are fine in a sandbox. Timing numbers are only trustworthy on real hardware.
 
