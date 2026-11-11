@@ -4,6 +4,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update \
  && apt-get install -y clang-18 libclang-rt-18-dev \
+    make curl ca-certificates time libreadline-dev \
  && rm -rf /var/lib/apt/lists/*
 
 # Stable path to the preloadable Scudo library.
@@ -16,5 +17,8 @@ ENV SCUDO_SO=/usr/local/lib/libscudo.so
 
 WORKDIR /work/targets/toy
 COPY targets/toy/toy.c .
+
+COPY targets/lua/fetch.sh targets/lua/build.sh targets/lua/run_suite.sh /work/targets/lua/
+RUN chmod +x /work/targets/lua/fetch.sh /work/targets/lua/build.sh /work/targets/lua/run_suite.sh
 
 CMD ["bash"]
