@@ -172,6 +172,8 @@ Virtual aliasing for use-after-free is known from research (Oscar, 2017). That r
 2. Run it on the toy target. Done.
 3. On the Lua repo, compare runs with GWP-ASan off and on, to isolate GWP-ASan's cost from Scudo's own. Done. `reports/lua.md`.
 
+Later, on Valkey, also run streams, Pub/Sub, cluster, and the server's own scripting (`EVAL`). That scripting is a Lua interpreter built into Valkey. `reports/valkey.md`.
+
 Behavior checks (does it catch the bug?) are fine in a sandbox. Timing numbers are only trustworthy on real hardware.
 
 ---
