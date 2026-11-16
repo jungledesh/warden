@@ -15,28 +15,33 @@ RUN SO="$(clang-18 -print-resource-dir)/lib/linux/libclang_rt.scudo_standalone-$
 
 ENV SCUDO_SO=/usr/local/lib/libscudo.so
 
-# Valkey linked to libc malloc. The Linux default compiles in jemalloc,
-# and LD_PRELOAD cannot replace that.
-ARG VALKEY_VERSION=9.1.3
-ARG VALKEY_SHA256=184e34ed2d9b51879b682b5b15205e2b9d677c60280e3cb453be8f520d04e293
-RUN curl -fsSL -o /tmp/valkey.tar.gz "https://github.com/valkey-io/valkey/archive/refs/tags/${VALKEY_VERSION}.tar.gz" \
- && echo "${VALKEY_SHA256}  /tmp/valkey.tar.gz" | sha256sum -c - \
- && mkdir -p /tmp/valkey-src \
- && tar -xzf /tmp/valkey.tar.gz -C /tmp/valkey-src --strip-components=1 \
- && make -C /tmp/valkey-src -j"$(nproc)" MALLOC=libc CC=clang-18 \
- && make -C /tmp/valkey-src install PREFIX=/usr/local MALLOC=libc CC=clang-18 \
- && valkey-server --daemonize yes --bind 127.0.0.1 --port 6379 \
-      --protected-mode yes --save "" --dir /tmp \
-      --pidfile /tmp/valkey.pid --logfile /tmp/valkey.log \
- && i=0; while [ "$i" -lt 20 ]; do valkey-cli ping && break; i=$((i+1)); sleep 0.2; done \
- && valkey-cli INFO memory | grep -q '^mem_allocator:libc' \
- && valkey-cli SHUTDOWN NOSAVE \
- && rm -rf /tmp/valkey-src /tmp/valkey.tar.gz /tmp/valkey.pid /tmp/valkey.log
+# The side-file script calls llvm-nm, llvm-readelf, and llvm-objdump with no version.
+RUN apt-get update \
+ && apt-get install -y llvm-18 \
+ && ln -s /usr/bin/llvm-nm-18 /usr/local/bin/llvm-nm \
+ && ln -s /usr/bin/llvm-readelf-18 /usr/local/bin/llvm-readelf \
+ && ln -s /usr/bin/llvm-objdump-18 /usr/local/bin/llvm-objdump \
+ && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /work/targets/toy
-COPY targets/toy/toy.c .
+# curl is the C sample. Left unstripped so the side-file script can read it.
+ARG CURL_VERSION=8.23.0
+ARG CURL_SHA256=e3de77cfa6367083c776a26647fc9f633b538c06c3baa73d931a252ac8f72b49
+RUN curl -fsSL -o /tmp/curl.tar.gz "https://github.com/curl/curl/releases/download/curl-8_23_0/curl-${CURL_VERSION}.tar.gz" \
+ && echo "${CURL_SHA256}  /tmp/curl.tar.gz" | sha256sum -c - \
+ && mkdir -p /tmp/curl-src \
+ && tar -xzf /tmp/curl.tar.gz -C /tmp/curl-src --strip-components=1 \
+ && cd /tmp/curl-src \
+ && ./configure --disable-shared --without-ssl --without-zlib --without-libpsl \
+      --without-nghttp2 --without-libidn2 --without-brotli --without-zstd \
+      --disable-ldap --disable-manual \
+      CC=clang-18 CFLAGS="-O0 -g" \
+ && make -j"$(nproc)" \
+ && make install \
+ && rm -rf /tmp/curl-src /tmp/curl.tar.gz
 
-COPY targets/lua/fetch.sh targets/lua/build.sh targets/lua/run_suite.sh /work/targets/lua/
-RUN chmod +x /work/targets/lua/fetch.sh /work/targets/lua/build.sh /work/targets/lua/run_suite.sh
+WORKDIR /work
+
+COPY scripts/sidefile /usr/local/bin/sidefile
+RUN chmod +x /usr/local/bin/sidefile
 
 CMD ["bash"]
