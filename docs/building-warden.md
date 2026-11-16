@@ -9,7 +9,13 @@ Read each function name, its offset, and size with `nm` or `readelf`.
 Scan each function with a disassembler. If a call or a jump names `malloc`, `calloc`, `realloc`, `free`, `new`, or `delete`, record that it allocates. (A call through a pointer stays off).
 Read the build id with `readelf`, and write the map with it next to the function list.
 Warden does not grow its own reader for any of that.
-Strip that same binary.
+
+### Slot writing
+
+The map is finished before this step.
+CI hashes that map.
+CI writes the hash into a metadata slot in the binary. The build id already lives in a slot of that kind.
+Strip that same binary. The strip leaves the slot in place.
 Deploy the stripped binary.
 Keep the map with Warden.
 
@@ -17,6 +23,12 @@ When the stripped binary starts, Warden adds this run's load address to each off
 Warden reads the build id from the running binary and compares. Match: use the map. No match: ignore the map.
 
 ## Allocator Work
+
+### Checking the hash
+
+At start, the allocator reads the map and hashes it.
+It compares that hash to the stamp in the binary.
+Match: use the map. No match: ignore the map.
 
 Warden profiles every memory operation that runs. It does not sample.
 
