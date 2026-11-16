@@ -1,0 +1,229 @@
+#!/usr/bin/env bash
+# Read one unstripped ELF and write a Warden side file. Does not run the binary.
+# Tools are llvm-nm, llvm-readelf, and llvm-objdump from PATH. No version is pinned.
+#
+#   build-id <hex>
+#   offset size name
+#   <offset> <size> <name>
+# Only functions that allocate are listed.
+# Offset and size are 16 hex digits. The name is the rest of the line and may
+# contain spaces. A name with a control character is skipped. A function is
+# listed when a call or a jump names malloc, calloc, realloc, aligned_alloc,
+# posix_memalign, memalign, valloc, pvalloc, free, new, or delete. new and
+# delete include operator new and operator delete. A call through a pointer
+# is left out.
+set -euo pipefail
+umask 077
+export LC_ALL=C
+
+sym=
+recs=
+stats=
+err=
+tmpmap=
+
+cleanup() {
+  [ -n "$sym" ] && rm -f -- "$sym"
+  [ -n "$recs" ] && rm -f -- "$recs"
+  [ -n "$stats" ] && rm -f -- "$stats"
+  [ -n "$err" ] && rm -f -- "$err"
+  [ -n "$tmpmap" ] && rm -f -- "$tmpmap"
+  return 0
+}
+trap cleanup EXIT
+
+log() {
+  printf 'sidefile: %s\n' "$*" >&2
+}
+
+die() {
+  log "$1"
+  exit "$2"
+}
+
+usage() {
+  log "usage: sidefile -o map binary"
+  exit 1
+}
+
+# Absolute path of the command the user has on PATH. No version suffix.
+find_tool() {
+  local path
+  path=$(command -v -- "$1" 2>/dev/null || true)
+  case $path in
+    /*) [ -x "$path" ] || return 1 ;;
+    *) return 1 ;;
+  esac
+  printf '%s\n' "$path"
+}
+
+out=
+while [ $# -gt 0 ]; do
+  case $1 in
+    -o)
+      [ $# -ge 2 ] || usage
+      out=$2
+      shift 2
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      usage
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+[ $# -eq 1 ] || usage
+[ -n "$out" ] || usage
+bin=$1
+case $bin in
+  -*) usage ;;
+esac
+[ -f "$bin" ] && [ -r "$bin" ] || die "binary is not a readable file" 2
+[ ! -L "$out" ] || die "map path is a symlink" 1
+outdir=$(dirname -- "$out")
+[ -d "$outdir" ] && [ -w "$outdir" ] || die "cannot write map" 1
+
+NM=$(find_tool llvm-nm) || die "llvm-nm not found" 2
+READELF=$(find_tool llvm-readelf) || die "llvm-readelf not found" 2
+OBJDUMP=$(find_tool llvm-objdump) || die "llvm-objdump not found" 2
+
+magic=$(od -An -N 4 -t x1 -- "$bin" | tr -d '[:space:]')
+[ "$magic" = "7f454c46" ] || die "not an elf binary" 2
+
+err=$(mktemp "${TMPDIR:-/tmp}/warden-sidefile.XXXXXX")
+
+notes=$("$READELF" -n "$bin" 2>"$err") || die "llvm-readelf failed" 2
+build_id=$(printf '%s\n' "$notes" | sed -n 's/^[[:space:]]*Build ID:[[:space:]]*\([0-9a-fA-F][0-9a-fA-F]*\)[[:space:]]*$/\1/p')
+build_id=${build_id%%$'\n'*}
+build_id=$(printf '%s' "$build_id" | tr '[:upper:]' '[:lower:]')
+case $build_id in
+  *[!0-9a-f]*) die "no build id" 3 ;;
+esac
+# md5 and uuid are 16 bytes. sha1 is 20. Shorter than that is not a build id.
+[ "${#build_id}" -ge 32 ] || die "no build id" 3
+
+sym=$(mktemp "${TMPDIR:-/tmp}/warden-sidefile.XXXXXX")
+"$NM" -S -C "$bin" >"$sym" 2>"$err" || die "llvm-nm failed" 2
+
+recs=$(mktemp "${TMPDIR:-/tmp}/warden-sidefile.XXXXXX")
+stats=$(mktemp "${TMPDIR:-/tmp}/warden-sidefile.XXXXXX")
+
+set +e
+"$OBJDUMP" -d --no-show-raw-insn -C "$bin" 2>"$err" \
+  | SIDEFILE_RECS="$recs" SIDEFILE_STATS="$stats" awk '
+BEGIN {
+  out = ENVIRON["SIDEFILE_RECS"]
+  stats = ENVIRON["SIDEFILE_STATS"]
+}
+function norm(h) {
+  h = tolower(h)
+  sub(/^0+/, "", h)
+  if (h == "") h = "0"
+  return h
+}
+function pad(h) {
+  h = norm(h)
+  while (length(h) < 16) h = "0" h
+  return h
+}
+function is_alloc(sym) {
+  sub(/@.*$/, "", sym)
+  if (index(sym, "+") > 0) return 0
+  if (sym == "malloc" || sym == "calloc" || sym == "realloc" || sym == "free" || sym == "new" || sym == "delete" ||
+      sym == "aligned_alloc" || sym == "posix_memalign" || sym == "memalign" || sym == "valloc" || sym == "pvalloc")
+    return 1
+  if (sym ~ /^operator new(\[\]|\(| |$)/) return 1
+  if (sym ~ /^operator delete(\[\]|\(| |$)/) return 1
+  if (sym ~ /^_Z(nw|na|dl|da)/) return 1
+  return 0
+}
+function target(s,    i, depth, end, c) {
+  end = 0
+  for (i = length(s); i >= 1; i--) if (substr(s, i, 1) == ">") { end = i; break }
+  if (!end) return ""
+  depth = 1
+  for (i = end - 1; i >= 1; i--) {
+    c = substr(s, i, 1)
+    if (c == ">") depth++
+    else if (c == "<") {
+      depth--
+      if (depth == 0) return substr(s, i + 1, end - i - 1)
+    }
+  }
+  return ""
+}
+function is_xfer(m) {
+  return m == "bl" || m == "blr" || m == "b" || m == "br" || m ~ /^b\./ \
+    || m == "call" || m == "callq" || m == "jmp" || m == "jmpq" \
+    || m == "jal" || m == "jalr"
+}
+FILENAME != "-" {
+  if (split($0, f, /[[:space:]]+/) < 4) next
+  if (f[1] !~ /^[0-9a-fA-F]+$/ || f[2] !~ /^[0-9a-fA-F]+$/ || f[3] !~ /^[TtWwIi]$/) next
+  if (norm(f[2]) == "0") next
+  name = $0
+  sub(/^[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+/, "", name)
+  if (name ~ /[[:cntrl:]]/) { nskip++; next }
+  key = norm(f[1])
+  if (!(key in size)) nfunc++
+  size[key] = norm(f[2])
+  fname[key] = name
+  next
+}
+{
+  if ($0 ~ /^[0-9a-fA-F]+[[:space:]]+</ && $0 ~ />:[[:space:]]*$/) {
+    split($0, h, /[[:space:]]+/)
+    cur = norm(h[1])
+    next
+  }
+  if (cur == "" || !(cur in size)) next
+  if (!match($0, /^[[:space:]]*[0-9a-fA-F]+:[[:space:]]+/)) next
+  insn = substr($0, RSTART + RLENGTH)
+  split(insn, a, /[[:space:]]+/)
+  if (!is_xfer(a[1])) next
+  symname = target(insn)
+  if (symname != "" && is_alloc(symname)) flag[cur] = 1
+}
+END {
+  nalloc = 0
+  for (k in size) {
+    if (!(k in flag)) continue
+    nalloc++
+    printf "%s %s %s\n", pad(k), pad(size[k]), fname[k] > out
+  }
+  printf "%d %d %d\n", nfunc + 0, nalloc + 0, nskip + 0 > stats
+}
+' "$sym" -
+# Two commands: llvm-objdump, then awk. Any other length is a broken pipeline.
+st=("${PIPESTATUS[@]}")
+set -e
+[ "${#st[@]}" -eq 2 ] || die "scan failed" 2
+[ "${st[0]}" -eq 0 ] || die "llvm-objdump failed" 2
+[ "${st[1]}" -eq 0 ] || die "scan failed" 2
+
+read -r nfunc nalloc nskip <"$stats"
+case $nfunc in
+  ''|*[!0-9]*) die "scan failed" 2 ;;
+esac
+[ "$nfunc" -gt 0 ] || die "no function symbols; need an unstripped binary" 2
+
+LC_ALL=C sort -k1,1 -o "$recs" "$recs"
+tmpmap=$(mktemp "$outdir/.sidefile.XXXXXX")
+{
+  printf 'build-id %s\n' "$build_id"
+  printf 'offset size name\n'
+  cat -- "$recs"
+} >"$tmpmap"
+chmod 600 "$tmpmap"
+mv -f -- "$tmpmap" "$out"
+tmpmap=
+
+msg="ok build_id=${build_id} functions=${nfunc} allocating=${nalloc}"
+[ "$nskip" -eq 0 ] || msg="${msg} skipped=${nskip}"
+log "$msg"
