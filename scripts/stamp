@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# The binary must already contain the empty slot.
+#   stamp -o map binary
+# writes the map, writes the hash into the slot, and checks the build id and
+# the rows did not change.
+set -euo pipefail
+umask 077
+export LC_ALL=C
+
+log() {
+  printf 'stamp: %s\n' "$*" >&2
+}
+
+die() {
+  log "$1"
+  exit "$2"
+}
+
+usage() {
+  log "usage: stamp -o map binary"
+  exit 1
+}
+
+find_tool() {
+  local path
+  path=$(command -v -- "$1" 2>/dev/null || true)
+  case $path in
+    /*) [ -x "$path" ] || return 1 ;;
+    *) return 1 ;;
+  esac
+  printf '%s\n' "$path"
+}
+
+out=
+while [ $# -gt 0 ]; do
+  case $1 in
+    -o)
+      [ $# -ge 2 ] || usage
+      out=$2
+      shift 2
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      usage
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+[ $# -eq 1 ] || usage
+[ -n "$out" ] || usage
+bin=$1
+[ -f "$bin" ] && [ -r "$bin" ] || die "binary is not a readable file" 2
+[ -w "$bin" ] || die "binary is not writable" 1
+[ ! -L "$out" ] || die "map path is a symlink" 1
+
+STAMP=$(find_tool warden-stamp) || die "warden-stamp not found" 2
+SIDE=$(find_tool sidefile) || die "sidefile not found" 2
+"$SIDE" -o "$out" "$bin"
+"$STAMP" apply "$out" "$bin"
+
+again=$(mktemp "${TMPDIR:-/tmp}/warden-stamp.XXXXXX")
+cleanup() {
+  rm -f -- "$again"
+  return 0
+}
+trap cleanup EXIT
+"$SIDE" -o "$again" "$bin"
+if ! cmp -s -- "$out" "$again"; then
+  "$STAMP" clear "$bin" || die "cannot clear hash slot" 2
+  die "stopped: build id or rows changed" 2
+fi
+log "hash written, build id and rows unchanged"
