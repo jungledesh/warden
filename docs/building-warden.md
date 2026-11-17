@@ -4,40 +4,18 @@ We change the allocator that contains GWP-ASan, and turn sampling off. Only a ma
 
 ## Building the side file
 
-Build once, unstripped.
-Read each function name, its offset, and size with `nm` or `readelf`.
-Scan each function with a disassembler. If a call or a jump names `malloc`, `calloc`, `realloc`, `free`, `new`, or `delete`, record that it allocates. (A call through a pointer stays off).
-Read the build id with `readelf`, and write the map with it next to the function list.
-Warden does not grow its own reader for any of that.
+Before the program runs, `scripts/sidefile` reads the unstripped binary and writes the map. The map is the build id, then the offset and size of each function that allocates. The script does not run the binary.
 
 ### Slot writing
 
-The map is finished before this step.
-CI hashes that map.
-CI writes the hash into a metadata slot in the binary. The build id already lives in a slot of that kind.
-Strip that same binary. The strip leaves the slot in place.
-Deploy the stripped binary.
-Keep the map with Warden.
-
-When the stripped binary starts, Warden adds this run's load address to each offset.  
-Warden reads the build id from the running binary and compares. Match: use the map. No match: ignore the map.
+Before the program runs, the binary is linked with an empty slot. `scripts/stamp` writes the hash of the map into that slot. It then reads the binary again and checks the build id and the rows did not change.
 
 ## Allocator Work
 
 ### Checking the hash
 
-At start, the allocator reads the map and hashes it.
-It compares that hash to the stamp in the binary.
-Match: use the map. No match: ignore the map.
+When the program starts, Warden reads the map named by `WARDEN_MAP`. It compares the hash of the map to the slot, and the two build ids. Both match: it keeps the rows. A miss writes one line to standard error and keeps no rows. The program keeps running. Guarding stays off.
 
-Warden profiles every memory operation that runs. It does not sample.
+## Open work
 
-A memory operation comes in. The allocator takes the address of that call and looks for it in the side file.
-
-A function row is the function start and its size. The call address sits inside that range. The row keeps the address of each memory operation already profiled.
-
-If the call address is inside a function row and is not yet listed there, profile this operation and add its address to the row. A later operation in the same function has a different address, so it is profiled too. The same address on a later run is already listed, so it is left alone.
-
-If the call address is in no row, add a row for that address and profile it. The same address on a later run finds that row.
-
-An operation that has not run yet stays unprofiled until it runs. The first time it runs, it is profiled and its address is added.
+Time the in-memory table search on a running program. An allocation that is checked searches the rows already in memory. Valkey's table is about 10 comparisons. A 10,000-function table is about 14. Each comparison is two addresses. With the table in cache, that is tens of nanoseconds, and it stays under a microsecond if the table is not in cache. This has not been timed.
