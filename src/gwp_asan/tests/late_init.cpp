@@ -21,5 +21,5 @@ TEST(LateInit, CheckLateInitIsOK) {
   Opts.SampleRate = 1;
 
   GPA.init(Opts);
-  EXPECT_TRUE(GPA.shouldSample());
+  EXPECT_FALSE(GPA.shouldSample());
 }

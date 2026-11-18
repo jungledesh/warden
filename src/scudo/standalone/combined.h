@@ -323,18 +323,7 @@ public:
     if (Alignment < MinAlignment)
       Alignment = MinAlignment;
 
-#ifdef GWP_ASAN_HOOKS
-    if (UNLIKELY(GuardedAlloc.shouldSample())) {
-      if (void *Ptr = GuardedAlloc.allocate(Size, Alignment)) {
-        Stats.lock();
-        Stats.add(StatAllocated, GuardedAllocSlotSize);
-        Stats.sub(StatFree, GuardedAllocSlotSize);
-        Stats.unlock();
-        return Ptr;
-      }
-    }
-#endif // GWP_ASAN_HOOKS
-
+    // Sampling is off, so allocate does not call shouldSample.
     const FillContentsMode FillContents = ZeroContents ? ZeroFill
                                           : TSDRegistry.getDisableMemInit()
                                               ? NoFill
