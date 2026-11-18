@@ -323,7 +323,7 @@ public:
     if (Alignment < MinAlignment)
       Alignment = MinAlignment;
 
-    // Sampling is off. Allocations are not randomly guarded.
+    // Sampling is off, so allocate does not call shouldSample.
     const FillContentsMode FillContents = ZeroContents ? ZeroFill
                                           : TSDRegistry.getDisableMemInit()
                                               ? NoFill

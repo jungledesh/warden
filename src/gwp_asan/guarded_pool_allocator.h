@@ -76,21 +76,8 @@ public:
   // allocate.
   void iterate(void *Base, size_t Size, iterate_callback Cb, void *Arg);
 
-  // Return whether the allocation should be randomly chosen for sampling.
-  GWP_ASAN_ALWAYS_INLINE bool shouldSample() {
-    // NextSampleCounter == 0 means we "should regenerate the counter".
-    //                   == 1 means we "should sample this allocation".
-    // AdjustedSampleRatePlusOne is designed to intentionally underflow. This
-    // class must be valid when zero-initialised, and we wish to sample as
-    // infrequently as possible when this is the case, hence we underflow to
-    // UINT32_MAX.
-    if (GWP_ASAN_UNLIKELY(getThreadLocals()->NextSampleCounter == 0))
-      getThreadLocals()->NextSampleCounter =
-          ((getRandomUnsigned32() % (AdjustedSampleRatePlusOne - 1)) + 1) &
-          ThreadLocalPackedVariables::NextSampleCounterMask;
-
-    return GWP_ASAN_UNLIKELY(--getThreadLocals()->NextSampleCounter == 0);
-  }
+  // Sampling is off. Scudo still calls this. The answer is always no.
+  GWP_ASAN_ALWAYS_INLINE bool shouldSample() { return false; }
 
   // Returns whether the provided pointer is a current sampled allocation that
   // is owned by this pool.
