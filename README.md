@@ -25,8 +25,44 @@ Constraints: no recompiling the target, no late detection, regular
 hardware.
 
 ## Status
-Early stage. First step: run GWP-ASan as-is on LLVM (Scudo), then on
-TCMalloc, to set a baseline.
+Closed. See [Why this stopped](#why-this-stopped).
+
+## Why this stopped
+The goal was to guard chosen allocations with sampling turned off, so a bug
+would not be missed because of a random pick. The pool is still 16 live
+blocks. GWP-ASan already uses that pool, and its sample rate can be turned
+up until it tries to guard every allocation. We did not find a way to do
+more with the same 16 slots.
+
+Work done:
+
+- Side file. A script reads the unstripped binary and records the start and
+  size of each function that calls an allocator by name. A call through a
+  pointer is not recorded. Checked on curl and on a small fmt program.
+- Hash slot. The binary is linked with an empty slot. The hash of the side
+  file is written into it. Startup checks that hash and the build id. A
+  match keeps the rows in memory. A miss keeps none, and the program keeps
+  running. Checked on curl.
+- Sampling is off in this tree. GWP-ASan's sample check returns no, and
+  Scudo no longer calls it.
+
+Explored, not built:
+
+- Guard every block from a function in the side file, and let no other
+  caller take a slot. The rows are loaded. Nothing reads the caller on
+  malloc. A call through a pointer is missing, or a small wrapper takes the
+  slots for every caller.
+- Remember a caller address and skip it after the first guarded block. A
+  loop stays on the same address, so a later pass is not guarded. That later
+  pass can be the one that overflows or uses the block after free.
+- Remember the address and the size. A new size is guarded once. The same
+  size with a different use is not. The use happens after malloc returns.
+- A compiler tag on the malloc site. One call is one tag. A loop that
+  sometimes overflows and sometimes does not is still one tag.
+
+Same caller and same size can be a good block one time and a bad block the
+next. Nothing known at malloc tells them apart. Spending the 16 slots on a
+chosen function is a smaller sampler, not a better one.
 
 ## Scope and responsible use
 Targets are limited to open-source code, bug-bounty programs, or
